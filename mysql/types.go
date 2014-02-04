@@ -125,7 +125,10 @@ func ParseTime(str string, loc *time.Location) (t time.Time, err error) {
 		}
 	}
 	// Don't expect 0000-00-00 00:00:00.0+
-	t, err = time.ParseInLocation(format, str, loc)
+	t, err = time.Parse(format, str)
+	if err == nil && loc != time.UTC {
+		t = convertTime(t, loc)
+	}
 	return
 }
 

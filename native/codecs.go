@@ -352,11 +352,11 @@ func (pr *pktReader) readTime() time.Time {
 
 	buf := pr.buf[:dlen]
 	pr.readFull(buf)
-	var y, mon, d, h, m, s, u int
+	var y, mon, d, h, m, s, n int
 	switch dlen {
 	case 11:
 		// 2006-01-02 15:04:05.001004005
-		u = int(DecodeU32(buf[7:]))
+		n = int(DecodeU32(buf[7:]))
 		fallthrough
 	case 7:
 		// 2006-01-02 15:04:05
@@ -370,7 +370,6 @@ func (pr *pktReader) readTime() time.Time {
 		mon = int(buf[2])
 		d = int(buf[3])
 	}
-	n := u * int(time.Microsecond)
 	return time.Date(y, time.Month(mon), d, h, m, s, n, time.Local)
 }
 
@@ -378,7 +377,7 @@ func encodeNonzeroTime(buf []byte, y int16, mon, d, h, m, s byte, n uint32) int 
 	buf[0] = 0
 	switch {
 	case n != 0:
-		EncodeU32(buf[8:12], n)
+		EncodeU32(buf[7:12], n)
 		buf[0] += 4
 		fallthrough
 	case s != 0 || m != 0 || h != 0:
@@ -394,10 +393,6 @@ func encodeNonzeroTime(buf []byte, y int16, mon, d, h, m, s byte, n uint32) int 
 	return int(buf[0] + 1)
 }
 
-func getTimeMicroseconds(t time.Time) int {
-	return t.Nanosecond()/int(time.Microsecond)
-}
-
 func EncodeTime(buf []byte, t time.Time) int {
 	if t.IsZero() {
 		// MySQL zero
@@ -406,11 +401,11 @@ func EncodeTime(buf []byte, t time.Time) int {
 	}
 	y, mon, d := t.Date()
 	h, m, s := t.Clock()
-	u:= getTimeMicroseconds(t)
+	n := t.Nanosecond()
 	return encodeNonzeroTime(
 		buf,
 		int16(y), byte(mon), byte(d),
-		byte(h), byte(m), byte(s), uint32(u),
+		byte(h), byte(m), byte(s), uint32(n),
 	)
 }
 
@@ -424,7 +419,7 @@ func lenTime(t time.Time) int {
 	switch {
 	case t.IsZero():
 		return 1
-	case getTimeMicroseconds(t) != 0:
+	case t.Nanosecond() != 0:
 		return 12
 	case t.Second() != 0 || t.Minute() != 0 || t.Hour() != 0:
 		return 8

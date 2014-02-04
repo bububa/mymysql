@@ -25,7 +25,7 @@ func checkErrId(t *testing.T, err error, rid, eid int64) {
 }
 
 func TestAll(t *testing.T) {
-	data := []string{"jeden", "dwa", "trzy"}
+	data := []string{"jeden", "dwa"}
 
 	db, err := sql.Open("mymysql", "test/testuser/TestPasswd9")
 	checkErr(t, err)
@@ -36,24 +36,23 @@ func TestAll(t *testing.T) {
 
 	_, err = db.Exec(
 		`CREATE TABLE go (
-			id  INT(11) NOT NULL PRIMARY KEY AUTO_INCREMENT,
-			txt TEXT,
-			n   BIGINT
+			id  INT PRIMARY KEY AUTO_INCREMENT,
+			txt TEXT
 		) ENGINE=InnoDB`)
 	checkErr(t, err)
 
-	ins, err := db.Prepare("INSERT go SET txt=?, n=?")
+	ins, err := db.Prepare("INSERT go SET txt=?")
 	checkErr(t, err)
 
 	tx, err := db.Begin()
 	checkErr(t, err)
 
-	res, err := ins.Exec(data[0], 0)
+	res, err := ins.Exec(data[0])
 	checkErr(t, err)
 	id, err := res.LastInsertId()
 	checkErrId(t, err, id, 1)
 
-	res, err = ins.Exec(data[1], 1)
+	res, err = ins.Exec(data[1])
 	checkErr(t, err)
 	id, err = res.LastInsertId()
 	checkErrId(t, err, id, 2)
@@ -63,7 +62,7 @@ func TestAll(t *testing.T) {
 	tx, err = db.Begin()
 	checkErr(t, err)
 
-	res, err = tx.Exec("INSERT go SET txt=?, n=?", "cztery", 3)
+	res, err = tx.Exec("INSERT go SET txt=?", "trzy")
 	checkErr(t, err)
 	id, err = res.LastInsertId()
 	checkErrId(t, err, id, 3)
@@ -72,44 +71,16 @@ func TestAll(t *testing.T) {
 
 	rows, err := db.Query("SELECT * FROM go")
 	checkErr(t, err)
-	i := 1
 	for rows.Next() {
-		var (
-			id  int
-			txt string
-			n   int64
-		)
-		checkErr(t, rows.Scan(&id, &txt, &n))
+		var id int
+		var txt string
+		checkErr(t, rows.Scan(&id, &txt))
 		if id > len(data) {
 			t.Fatal("To many rows in table")
 		}
-		if id != i || data[i-1] != txt || int64(i-1) != n {
+		if data[id-1] != txt {
 			t.Fatalf("txt[%d] == '%s' != '%s'", id, txt, data[id-1])
 		}
-		i++
-	}
-	checkErr(t, rows.Err())
-
-	sel, err := db.Prepare("SELECT * FROM go")
-	checkErr(t, err)
-
-	rows, err = sel.Query()
-	checkErr(t, err)
-	i = 1
-	for rows.Next() {
-		var (
-			id  int
-			txt string
-			n   int64
-		)
-		checkErr(t, rows.Scan(&id, &txt, &n))
-		if id > len(data) {
-			t.Fatal("To many rows in table")
-		}
-		if id != i || data[i-1] != txt || int64(i-1) != n {
-			t.Fatalf("txt[%d] == '%s' != '%s'", id, txt, data[id-1])
-		}
-		i++
 	}
 	checkErr(t, rows.Err())
 

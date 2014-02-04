@@ -24,7 +24,7 @@ func bindValue(val reflect.Value) (out paramValue) {
 	typ := val.Type()
 	if typ.Kind() == reflect.Ptr {
 		// We have addressable pointer
-		out.addr = val.Addr()
+		out.SetAddr(val.UnsafeAddr())
 		// Dereference pointer for next operation on its value
 		typ = typ.Elem()
 		val = val.Elem()
@@ -32,8 +32,9 @@ func bindValue(val reflect.Value) (out paramValue) {
 		// We have addressable value. Create a pointer to it
 		pv := val.Addr()
 		// This pointer is unaddressable so copy it and return an address
-		out.addr = reflect.New(pv.Type())
-		out.addr.Elem().Set(pv)
+		ppv := reflect.New(pv.Type())
+		ppv.Elem().Set(pv)
+		out.SetAddr(ppv.Pointer())
 	}
 
 	// Obtain value type
@@ -135,7 +136,7 @@ func bindValue(val reflect.Value) (out paramValue) {
 		}
 		if typ == rawType {
 			out.typ = val.FieldByName("Typ").Interface().(uint16)
-			out.addr = val.FieldByName("Val").Addr()
+			out.SetAddr(val.FieldByName("Val").Pointer())
 			out.raw = true
 			return
 		}

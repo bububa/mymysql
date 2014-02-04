@@ -36,14 +36,13 @@ func TestAutoConnectReconnect(t *testing.T) {
 	c.Raw.Close()
 
 	// Drop test table if exists
-	_, _, err := c.Query("drop table if exists R")
-	checkErr(t, err, nil)
+	c.Query("drop table R")
 
 	// Disconnect
 	c.Raw.Close()
 
 	// Create table
-	_, _, err = c.Query(
+	_, _, err := c.Query(
 		"create table R (id int primary key, name varchar(20))",
 	)
 	checkErr(t, err, nil)

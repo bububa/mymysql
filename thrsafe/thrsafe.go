@@ -65,6 +65,9 @@ func (c *Conn) Clone() mysql.Conn {
 }
 
 func (c *Conn) pinger() {
+	c.stopPinger = make(chan struct{})
+	defer func() { c.stopPinger = nil }()
+
 	const to = 60 * time.Second
 	sleep := to
 	for {
@@ -88,7 +91,6 @@ func (c *Conn) Connect() error {
 	//log.Println("Connect")
 	c.lock()
 	defer c.unlock()
-	c.stopPinger = make(chan struct{})
 	go c.pinger()
 	return c.Conn.Connect()
 }

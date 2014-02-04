@@ -53,8 +53,6 @@ type Conn struct {
 	// Timeout for connect
 	timeout time.Duration
 
-	dialer mysql.Dialer
-
 	// Return only types accepted by godrv
 	narrowTypeSet bool
 	// Store full information about fields in result
@@ -124,11 +122,6 @@ func (my *Conn) SetTimeout(timeout time.Duration) {
 	my.timeout = timeout
 }
 
-// NetConn return internall net.Conn
-func (my *Conn) NetConn() net.Conn {
-	return my.net_conn
-}
-
 type timeoutError struct{}
 
 func (e *timeoutError) Error() string   { return "i/o timeout" }
@@ -142,57 +135,85 @@ type stringAddr struct {
 func (a stringAddr) Network() string { return a.net }
 func (a stringAddr) String() string  { return a.addr }
 
-var DefaultDialer mysql.Dialer = func(proto, laddr, raddr string,
-	timeout time.Duration) (net.Conn, error) {
+func (my *Conn) connect() (err error) {
+	defer catchError(&err)
 
+	proto := my.proto
 	if proto == "" {
 		proto = "unix"
-		if strings.IndexRune(raddr, ':') != -1 {
+		if strings.IndexRune(my.raddr, ':') != -1 {
 			proto = "tcp"
 		}
 	}
 
-	// Make a connection
-	d := &net.Dialer{Timeout: timeout}
-	if laddr != "" {
-		var err error
+	// Simulate DialTimeout
+	t := time.NewTimer(my.timeout)
+	defer t.Stop()
+	ch := make(chan error, 1)
+
+	// Make connection
+	go func() {
+		var e error
+		defer func() {
+			ch <- e
+		}()
 		switch proto {
 		case "tcp", "tcp4", "tcp6":
-			d.LocalAddr, err = net.ResolveTCPAddr(proto, laddr)
+			var la, ra *net.TCPAddr
+			if my.laddr != "" {
+				if la, e = net.ResolveTCPAddr(proto, my.laddr); e != nil {
+					return
+				}
+			}
+			if my.raddr != "" {
+				if ra, e = net.ResolveTCPAddr(proto, my.raddr); e != nil {
+					return
+				}
+			}
+			if my.net_conn, e = net.DialTCP(proto, la, ra); e != nil {
+				my.net_conn = nil
+				return
+			}
+
 		case "unix":
-			d.LocalAddr, err = net.ResolveTCPAddr(proto, laddr)
+			var la, ra *net.UnixAddr
+			if my.raddr != "" {
+				if ra, e = net.ResolveUnixAddr(proto, my.raddr); e != nil {
+					return
+				}
+			}
+			if my.laddr != "" {
+				if la, e = net.ResolveUnixAddr(proto, my.laddr); e != nil {
+					return
+				}
+			}
+			if my.net_conn, e = net.DialUnix(proto, la, ra); e != nil {
+				my.net_conn = nil
+				return
+			}
+
 		default:
-			err = net.UnknownNetworkError(proto)
+			e = net.UnknownNetworkError(proto)
 		}
-		if err != nil {
-			return nil, err
+		return
+	}()
+
+	select {
+	case <-t.C:
+		// DialTimeout timeout error
+		err = &net.OpError{
+			Op:   "dial",
+			Net:  proto,
+			Addr: &stringAddr{proto, my.raddr},
+			Err:  &timeoutError{},
 		}
-	}
-	return d.Dial(proto, raddr)
-}
-
-func (my *Conn) SetDialer(d mysql.Dialer) {
-	my.dialer = d
-}
-
-func (my *Conn) connect() (err error) {
-	defer catchError(&err)
-
-	my.net_conn = nil
-	if my.dialer != nil {
-		my.net_conn, err = my.dialer(my.proto, my.laddr, my.raddr, my.timeout)
+		return
+	case err = <-ch:
 		if err != nil {
-			my.net_conn = nil
 			return
 		}
 	}
-	if my.net_conn == nil {
-		my.net_conn, err = DefaultDialer(my.proto, my.laddr, my.raddr, my.timeout)
-		if err != nil {
-			my.net_conn = nil
-			return
-		}
-	}
+
 	my.rd = bufio.NewReader(my.net_conn)
 	my.wr = bufio.NewWriter(my.net_conn)
 
@@ -515,8 +536,8 @@ func (my *Conn) Prepare(sql string) (mysql.Stmt, error) {
 func (stmt *Stmt) Bind(params ...interface{}) {
 	stmt.rebind = true
 
+	// Check for struct binding
 	if len(params) == 1 {
-		// Check for struct binding
 		pval := reflect.ValueOf(params[0])
 		kind := pval.Kind()
 		if kind == reflect.Ptr {
@@ -530,7 +551,7 @@ func (stmt *Stmt) Bind(params ...interface{}) {
 			typ != dateType &&
 			typ != timestampType &&
 			typ != rawType {
-			// We have a struct to bind
+			// We have struct to bind
 			if pval.NumField() != stmt.param_count {
 				panic(mysql.ErrBindCount)
 			}
@@ -546,6 +567,7 @@ func (stmt *Stmt) Bind(params ...interface{}) {
 			stmt.binded = true
 			return
 		}
+
 	}
 
 	// There isn't struct to bind
