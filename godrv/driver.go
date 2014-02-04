@@ -1,4 +1,4 @@
-//MySQL driver for Go sql package
+//MySQL driver for Go database/sql package
 package godrv
 
 import (
@@ -13,7 +13,6 @@ import (
 	"strconv"
 	"strings"
 	"time"
-	"unsafe"
 )
 
 type conn struct {
@@ -21,6 +20,7 @@ type conn struct {
 }
 
 type rowsRes struct {
+	row         mysql.Row
 	my          mysql.Result
 	simpleQuery mysql.Stmt
 }
@@ -33,15 +33,6 @@ func errFilter(err error) error {
 		return driver.ErrBadConn
 	}
 	return err
-}
-
-func run(s mysql.Stmt, args []driver.Value) (*rowsRes, error) {
-	a := (*[]interface{})(unsafe.Pointer(&args))
-	res, err := s.Run(*a...)
-	if err != nil {
-		return nil, errFilter(err)
-	}
-	return &rowsRes{my: res}, nil
 }
 
 func join(a []string) string {
@@ -108,26 +99,14 @@ func (c conn) Exec(query string, args []driver.Value) (driver.Result, error) {
 	if err != nil {
 		return nil, err
 	}
-	if len(q) > 0 {
-		res, err := c.my.Start(q)
-		if err != nil {
-			return nil, errFilter(err)
-		}
-		return &rowsRes{my: res}, nil
+	if len(q) == 0 {
+		return nil, driver.ErrSkip
 	}
-
-	s, err := c.my.Prepare(query)
+	res, err := c.my.Start(q)
 	if err != nil {
 		return nil, errFilter(err)
 	}
-	res, err := run(s, args)
-	if err != nil {
-		return nil, errFilter(err)
-	}
-	if err = s.Delete(); err != nil {
-		return nil, errFilter(err)
-	}
-	return res, nil
+	return &rowsRes{my: res}, nil
 }
 
 var textQuery = mysql.Stmt(new(native.Stmt))
@@ -137,28 +116,30 @@ func (c conn) Query(query string, args []driver.Value) (driver.Rows, error) {
 	if err != nil {
 		return nil, err
 	}
-	if len(q) > 0 {
-		res, err := c.my.Start(q)
-		if err != nil {
-			return nil, errFilter(err)
-		}
-		return &rowsRes{my: res, simpleQuery: textQuery}, nil
+	if len(q) == 0 {
+		return nil, driver.ErrSkip
 	}
-
-	s, err := c.my.Prepare(query)
+	res, err := c.my.Start(q)
 	if err != nil {
 		return nil, errFilter(err)
 	}
-	rows, err := run(s, args)
-	if err != nil {
-		return nil, errFilter(err)
-	}
-	rows.simpleQuery = s
-	return rows, nil
+	return &rowsRes{row: res.MakeRow(), my: res, simpleQuery: textQuery}, nil
 }
 
 type stmt struct {
-	my mysql.Stmt
+	my   mysql.Stmt
+	args []interface{}
+}
+
+func (s *stmt) run(args []driver.Value) (*rowsRes, error) {
+	for i, v := range args {
+		s.args[i] = interface{}(v)
+	}
+	res, err := s.my.Run(s.args...)
+	if err != nil {
+		return nil, errFilter(err)
+	}
+	return &rowsRes{my: res}, nil
 }
 
 func (c conn) Prepare(query string) (driver.Stmt, error) {
@@ -166,7 +147,7 @@ func (c conn) Prepare(query string) (driver.Stmt, error) {
 	if err != nil {
 		return nil, errFilter(err)
 	}
-	return stmt{st}, nil
+	return &stmt{st, make([]interface{}, st.NumParam())}, nil
 }
 
 func (c conn) Close() (err error) {
@@ -206,7 +187,7 @@ func (t tx) Rollback() (err error) {
 	return
 }
 
-func (s stmt) Close() (err error) {
+func (s *stmt) Close() (err error) {
 	err = s.my.Delete()
 	s.my = nil
 	if err != nil {
@@ -215,16 +196,21 @@ func (s stmt) Close() (err error) {
 	return
 }
 
-func (s stmt) NumInput() int {
+func (s *stmt) NumInput() int {
 	return s.my.NumParam()
 }
 
-func (s stmt) Exec(args []driver.Value) (driver.Result, error) {
-	return run(s.my, args)
+func (s *stmt) Exec(args []driver.Value) (driver.Result, error) {
+	return s.run(args)
 }
 
-func (s stmt) Query(args []driver.Value) (driver.Rows, error) {
-	return run(s.my, args)
+func (s *stmt) Query(args []driver.Value) (driver.Rows, error) {
+	r, err := s.run(args)
+	if err != nil {
+		return nil, err
+	}
+	r.row = r.my.MakeRow()
+	return r, nil
 }
 
 func (r *rowsRes) LastInsertId() (int64, error) {
@@ -265,18 +251,22 @@ func (r *rowsRes) Next(dest []driver.Value) error {
 	if r.my == nil {
 		return io.EOF // closed before
 	}
-	d := *(*mysql.Row)(unsafe.Pointer(&dest))
-	err := r.my.ScanRow(d)
+	err := r.my.ScanRow(r.row)
 	if err == nil {
 		if r.simpleQuery == textQuery {
 			// workaround for time.Time from text queries
 			for i, f := range r.my.Fields() {
-				switch f.Type {
-				case native.MYSQL_TYPE_TIMESTAMP, native.MYSQL_TYPE_DATETIME,
-					native.MYSQL_TYPE_DATE, native.MYSQL_TYPE_NEWDATE:
-					d[i] = d.ForceLocaltime(i)
+				if r.row[i] != nil {
+					switch f.Type {
+					case native.MYSQL_TYPE_TIMESTAMP, native.MYSQL_TYPE_DATETIME,
+						native.MYSQL_TYPE_DATE, native.MYSQL_TYPE_NEWDATE:
+						r.row[i] = r.row.ForceLocaltime(i)
+					}
 				}
 			}
+		}
+		for i, d := range r.row {
+			dest[i] = driver.Value(d)
 		}
 		return nil
 	}
@@ -294,7 +284,9 @@ func (r *rowsRes) Next(dest []driver.Value) error {
 
 type Driver struct {
 	// Defaults
-	proto, laddr, raddr, user, passwd, db, timeout string
+	proto, laddr, raddr, user, passwd, db string
+	timeout                               time.Duration
+	dialer                                Dialer
 
 	initCmds []string
 }
@@ -311,6 +303,7 @@ type Driver struct {
 //   unix:SOCKPATH,OPTIONS*DBNAME/USER/PASSWD
 //   tcp:ADDR*DBNAME/USER/PASSWD
 //   tcp:ADDR,OPTIONS*DBNAME/USER/PASSWD
+//   cloudsql:INSTANCE*DBNAME/USER/PASSWD
 //
 // OPTIONS can contain comma separated list of options in form:
 //   opt1=VAL1,opt2=VAL2,boolopt3,boolopt4
@@ -341,7 +334,11 @@ func (d *Driver) Open(uri string) (driver.Conn, error) {
 			case "laddr":
 				cfg.laddr = v
 			case "timeout":
-				cfg.timeout = v
+				to, err := time.ParseDuration(v)
+				if err != nil {
+					return nil, err
+				}
+				cfg.timeout = to
 			default:
 				return nil, errors.New("Unknown option: " + k)
 			}
@@ -358,17 +355,20 @@ func (d *Driver) Open(uri string) (driver.Conn, error) {
 	cfg.user = dup[1]
 	cfg.passwd = dup[2]
 
-	// Establish the connection
 	c := conn{mysql.New(
 		cfg.proto, cfg.laddr, cfg.raddr, cfg.user, cfg.passwd, cfg.db,
 	)}
-	if cfg.timeout != "" {
-		to, err := time.ParseDuration(cfg.timeout)
-		if err != nil {
-			return nil, err
+	if d.dialer != nil {
+		dialer := func(proto, laddr, raddr string, timeout time.Duration) (
+			net.Conn, error) {
+
+			return d.dialer(proto, laddr, raddr, cfg.user, cfg.passwd, timeout)
 		}
-		c.my.SetTimeout(to)
+		c.my.SetDialer(dialer)
 	}
+
+	// Establish the connection
+	c.my.SetTimeout(cfg.timeout)
 	for _, q := range cfg.initCmds {
 		c.my.Register(q) // Register initialisation commands
 	}
@@ -386,15 +386,35 @@ func (drv *Driver) Register(query string) {
 	drv.initCmds = append(d.initCmds, query)
 }
 
+// Dialer can be used to dial connections to MySQL. If Dialer returns (nil, nil)
+// the hook is skipped and normal dialing proceeds. user and dbname are there
+// only for logging.
+type Dialer func(proto, laddr, raddr, user, dbname string, timeout time.Duration) (net.Conn, error)
+
+// SetDialer sets custom Dialer used by Driver to make connections
+func (drv *Driver) SetDialer(dialer Dialer) {
+	drv.dialer = dialer
+}
+
 // Driver automatically registered in database/sql
 var d = Driver{proto: "tcp", raddr: "127.0.0.1:3306"}
 
-// Register calls (*Driver) Register method on driver registered in database/sql
+// Register calls Register method on driver registered in database/sql
 func Register(query string) {
 	d.Register(query)
+}
+
+// SetDialer calls SetDialer method on driver registered in database/sql
+func SetDialer(dialer Dialer) {
+	d.SetDialer(dialer)
 }
 
 func init() {
 	Register("SET NAMES utf8")
 	sql.Register("mymysql", &d)
+}
+
+// Version returns mymysql version string
+func Version() string {
+	return mysql.Version()
 }

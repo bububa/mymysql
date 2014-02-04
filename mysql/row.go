@@ -197,12 +197,6 @@ func (tr Row) ForceDate(nn int) (val Date) {
 	return
 }
 
-func convertTime(t time.Time, loc *time.Location) time.Time {
-	y, mon, d := t.Date()
-	h, m, s := t.Clock()
-	return time.Date(y, mon, d, h, m, s, t.Nanosecond(), loc)
-}
-
 // Get the nn-th value and return it as time.Time in loc location (zero if NULL)
 // Returns error if conversion is impossible. It can convert Date to time.Time.
 func (tr Row) TimeErr(nn int, loc *time.Location) (t time.Time, err error) {
