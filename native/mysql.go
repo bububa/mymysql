@@ -44,7 +44,7 @@ type Conn struct {
 	stmt_map  map[uint32]*Stmt // For reprepare during reconnect
 
 	// Current status of MySQL server connection
-	status uint16
+	status mysql.ConnStatus
 
 	// Maximum packet size that client can accept from server.
 	// Default 16*1024*1024-1. You may change it before connect.
@@ -52,6 +52,8 @@ type Conn struct {
 
 	// Timeout for connect
 	timeout time.Duration
+
+	dialer mysql.Dialer
 
 	// Return only types accepted by godrv
 	narrowTypeSet bool
@@ -122,6 +124,11 @@ func (my *Conn) SetTimeout(timeout time.Duration) {
 	my.timeout = timeout
 }
 
+// NetConn return internall net.Conn
+func (my *Conn) NetConn() net.Conn {
+	return my.net_conn
+}
+
 type timeoutError struct{}
 
 func (e *timeoutError) Error() string   { return "i/o timeout" }
@@ -135,85 +142,57 @@ type stringAddr struct {
 func (a stringAddr) Network() string { return a.net }
 func (a stringAddr) String() string  { return a.addr }
 
-func (my *Conn) connect() (err error) {
-	defer catchError(&err)
+var DefaultDialer mysql.Dialer = func(proto, laddr, raddr string,
+	timeout time.Duration) (net.Conn, error) {
 
-	proto := my.proto
 	if proto == "" {
 		proto = "unix"
-		if strings.IndexRune(my.raddr, ':') != -1 {
+		if strings.IndexRune(raddr, ':') != -1 {
 			proto = "tcp"
 		}
 	}
 
-	// Simulate DialTimeout
-	t := time.NewTimer(my.timeout)
-	defer t.Stop()
-	ch := make(chan error, 1)
-
-	// Make connection
-	go func() {
-		var e error
-		defer func() {
-			ch <- e
-		}()
+	// Make a connection
+	d := &net.Dialer{Timeout: timeout}
+	if laddr != "" {
+		var err error
 		switch proto {
 		case "tcp", "tcp4", "tcp6":
-			var la, ra *net.TCPAddr
-			if my.laddr != "" {
-				if la, e = net.ResolveTCPAddr(proto, my.laddr); e != nil {
-					return
-				}
-			}
-			if my.raddr != "" {
-				if ra, e = net.ResolveTCPAddr(proto, my.raddr); e != nil {
-					return
-				}
-			}
-			if my.net_conn, e = net.DialTCP(proto, la, ra); e != nil {
-				my.net_conn = nil
-				return
-			}
-
+			d.LocalAddr, err = net.ResolveTCPAddr(proto, laddr)
 		case "unix":
-			var la, ra *net.UnixAddr
-			if my.raddr != "" {
-				if ra, e = net.ResolveUnixAddr(proto, my.raddr); e != nil {
-					return
-				}
-			}
-			if my.laddr != "" {
-				if la, e = net.ResolveUnixAddr(proto, my.laddr); e != nil {
-					return
-				}
-			}
-			if my.net_conn, e = net.DialUnix(proto, la, ra); e != nil {
-				my.net_conn = nil
-				return
-			}
-
+			d.LocalAddr, err = net.ResolveTCPAddr(proto, laddr)
 		default:
-			e = net.UnknownNetworkError(proto)
+			err = net.UnknownNetworkError(proto)
 		}
-		return
-	}()
-
-	select {
-	case <-t.C:
-		// DialTimeout timeout error
-		err = &net.OpError{
-			Op:   "dial",
-			Net:  proto,
-			Addr: &stringAddr{proto, my.raddr},
-			Err:  &timeoutError{},
-		}
-		return
-	case err = <-ch:
 		if err != nil {
+			return nil, err
+		}
+	}
+	return d.Dial(proto, raddr)
+}
+
+func (my *Conn) SetDialer(d mysql.Dialer) {
+	my.dialer = d
+}
+
+func (my *Conn) connect() (err error) {
+	defer catchError(&err)
+
+	my.net_conn = nil
+	if my.dialer != nil {
+		my.net_conn, err = my.dialer(my.proto, my.laddr, my.raddr, my.timeout)
+		if err != nil {
+			my.net_conn = nil
 			return
 		}
 	}
-
+	if my.net_conn == nil {
+		my.net_conn, err = DefaultDialer(my.proto, my.laddr, my.raddr, my.timeout)
+		if err != nil {
+			my.net_conn = nil
+			return
+		}
+	}
 	my.rd = bufio.NewReader(my.net_conn)
 	my.wr = bufio.NewWriter(my.net_conn)
 
@@ -237,26 +216,24 @@ func (my *Conn) connect() (err error) {
 		// Get command response
 		res := my.getResponse()
 
-		if res.StatusOnly() {
-			// No fields in result (OK result)
-			continue
-		}
 		// Read and discard all result rows
 		row := res.MakeRow()
-		for {
-			err = res.getRow(row)
-			if err == io.EOF {
-				res, err = res.nextResult()
-				if err != nil {
-					return
+		for res != nil {
+			// Only read rows if they exist
+			if !res.StatusOnly() {
+				//read each row in this set
+				for {
+					err = res.getRow(row)
+					if err == io.EOF {
+						break
+					} else if err != nil {
+						return
+					}
 				}
-				if res == nil {
-					// No more rows and results from this cmd
-					break
-				}
-				row = res.MakeRow()
 			}
-			if err != nil {
+
+			// Move to the next result
+			if res, err = res.nextResult(); err != nil {
 				return
 			}
 		}
@@ -408,7 +385,7 @@ func (res *Result) getRow(row mysql.Row) (err error) {
 // Returns true if more results exixts. You don't have to call it before
 // NextResult method (NextResult returns nil if there is no more results).
 func (res *Result) MoreResults() bool {
-	return res.status&_SERVER_MORE_RESULTS_EXISTS != 0
+	return res.status&mysql.SERVER_MORE_RESULTS_EXISTS != 0
 }
 
 // Get the data row from server. This method reads one row of result set
@@ -536,8 +513,8 @@ func (my *Conn) Prepare(sql string) (mysql.Stmt, error) {
 func (stmt *Stmt) Bind(params ...interface{}) {
 	stmt.rebind = true
 
-	// Check for struct binding
 	if len(params) == 1 {
+		// Check for struct binding
 		pval := reflect.ValueOf(params[0])
 		kind := pval.Kind()
 		if kind == reflect.Ptr {
@@ -551,7 +528,7 @@ func (stmt *Stmt) Bind(params ...interface{}) {
 			typ != dateType &&
 			typ != timestampType &&
 			typ != rawType {
-			// We have struct to bind
+			// We have a struct to bind
 			if pval.NumField() != stmt.param_count {
 				panic(mysql.ErrBindCount)
 			}
@@ -567,7 +544,6 @@ func (stmt *Stmt) Bind(params ...interface{}) {
 			stmt.binded = true
 			return
 		}
-
 	}
 
 	// There isn't struct to bind
@@ -809,10 +785,11 @@ func (res *Result) GetRows() ([]mysql.Row, error) {
 // Escapes special characters in the txt, so it is safe to place returned string
 // to Query method.
 func (my *Conn) Escape(txt string) string {
-	if my.status&_SERVER_STATUS_NO_BACKSLASH_ESCAPES != 0 {
-		return escapeQuotes(txt)
-	}
-	return escapeString(txt)
+	return mysql.Escape(my, txt)
+}
+
+func (my *Conn) Status() mysql.ConnStatus {
+	return my.status
 }
 
 type Transaction struct {

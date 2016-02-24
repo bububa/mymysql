@@ -1,7 +1,6 @@
-Sorry for my poor English. If you can help with improving the English in this
-documentation, please contact me.
+Sorry for my poor English. If you can help with improving the English in this documentation, please contact me.
 
-## MyMySQL v1.4 (2013-03-04)
+## MyMySQL v1.5.4 (2015-01-08)
 
 This package contains MySQL client API written entirely in Go. It is designed
 to work with the MySQL protocol version 4.1 or greater. It definitely works
@@ -10,6 +9,14 @@ servers for my applications). Some people claim that mymysql works with older
 versions of MySQL protocol too.
 
 ## Changelog
+
+v1.5.4: Bugs fixed in native and godrv packages.
+
+v1.5.3: Bugs fixed in new godrv code.
+
+v1.5.1: Conn.NetConn method added. 
+
+v1.5: Needs Go 1.1 (time.ParseInLocation and net.Dialer) to compile.
 
 v1.4: `Stmt.ResetParams`, `Stmt.Map` and `Stmt.NumFields` methods disappeared.
 New `Stmt.Fields` method. *godrv* implements `driver.Queryer` interface which
@@ -444,6 +451,13 @@ This is the improved code of the previous example:
 
 ### Example 7 - use database/sql with mymysql driver
 
+    import (
+        "database/sql"
+        _"github.com/ziutek/mymysql/godrv"
+    )
+
+	// [...]
+
 	// Open new connection. The uri need to have the following syntax:
 	//
 	//   [PROTOCOL_SPECFIIC*]DBNAME/USER/PASSWD
@@ -699,8 +713,8 @@ causes panic.
 
 # Documentation
 
-[mysql](http://gopkgdoc.appspot.com/pkg/github.com/ziutek/mymysql/mysql)
-[native](http://gopkgdoc.appspot.com/pkg/github.com/ziutek/mymysql/native)
-[thrsafe](http://gopkgdoc.appspot.com/pkg/github.com/ziutek/mymysql/thrsafe)
-[autorc](http://gopkgdoc.appspot.com/pkg/github.com/ziutek/mymysql/autorc)
-[godrv](http://gopkgdoc.appspot.com/pkg/github.com/ziutek/mymysql/godrv)
+[mysql](http://godoc.org/pkg/github.com/ziutek/mymysql/mysql)
+[native](http://godoc.org/pkg/github.com/ziutek/mymysql/native)
+[thrsafe](http://godoc.org/pkg/github.com/ziutek/mymysql/thrsafe)
+[autorc](http://godoc.org/pkg/github.com/ziutek/mymysql/autorc)
+[godrv](http://godoc.org/pkg/github.com/ziutek/mymysql/godrv)

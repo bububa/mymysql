@@ -65,9 +65,6 @@ func (c *Conn) Clone() mysql.Conn {
 }
 
 func (c *Conn) pinger() {
-	c.stopPinger = make(chan struct{})
-	defer func() { c.stopPinger = nil }()
-
 	const to = 60 * time.Second
 	sleep := to
 	for {
@@ -76,7 +73,10 @@ func (c *Conn) pinger() {
 		case <-c.stopPinger:
 			return
 		case t := <-timer:
-			sleep := to - t.Sub(c.lastUsed)
+			c.mutex.Lock()
+			lastUsed := c.lastUsed
+			c.mutex.Unlock()
+			sleep := to - t.Sub(lastUsed)
 			if sleep <= 0 {
 				if c.Ping() != nil {
 					return
@@ -91,6 +91,7 @@ func (c *Conn) Connect() error {
 	//log.Println("Connect")
 	c.lock()
 	defer c.unlock()
+	c.stopPinger = make(chan struct{})
 	go c.pinger()
 	return c.Conn.Connect()
 }
@@ -133,6 +134,16 @@ func (c *Conn) Start(sql string, params ...interface{}) (mysql.Result, error) {
 		c.unlock()
 	}
 	return &Result{Result: res, conn: c}, err
+}
+
+func (c *Conn) Status() mysql.ConnStatus {
+	c.lock()
+	defer c.unlock()
+	return c.Conn.Status()
+}
+
+func (c *Conn) Escape(txt string) string {
+	return mysql.Escape(c, txt)
 }
 
 func (res *Result) ScanRow(row mysql.Row) error {

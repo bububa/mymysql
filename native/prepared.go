@@ -20,7 +20,7 @@ type Stmt struct {
 	field_count   int
 	param_count   int
 	warning_count int
-	status        uint16
+	status        mysql.ConnStatus
 
 	null_bitmap []byte
 }
@@ -40,6 +40,9 @@ func (stmt *Stmt) WarnCount() int {
 func (stmt *Stmt) sendCmdExec() {
 	// Calculate packet length and NULL bitmap
 	pkt_len := 1 + 4 + 1 + 4 + 1 + len(stmt.null_bitmap)
+	for ii := range stmt.null_bitmap {
+		stmt.null_bitmap[ii] = 0
+	}
 	for ii, param := range stmt.params {
 		par_len := param.Len()
 		pkt_len += par_len
