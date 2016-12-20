@@ -6,13 +6,14 @@ import (
 	"database/sql/driver"
 	"errors"
 	"fmt"
-	"github.com/ziutek/mymysql/mysql"
-	"github.com/ziutek/mymysql/native"
 	"io"
 	"net"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/ziutek/mymysql/mysql"
+	"github.com/ziutek/mymysql/native"
 )
 
 type conn struct {
@@ -83,7 +84,7 @@ func (c conn) parseQuery(query string, args []driver.Value) (string, error) {
 		case float64:
 			s = strconv.FormatFloat(v, 'e', 12, 64)
 		default:
-			panic(fmt.Sprintf("%v (%T) can't be handled by godrv"))
+			panic(fmt.Sprintf("%v (%T) can't be handled by godrv", v, v))
 		}
 		q[n] = query[:i]
 		q[n+1] = s
@@ -150,7 +151,7 @@ func (c conn) Prepare(query string) (driver.Stmt, error) {
 	return &stmt{st, make([]interface{}, st.NumParam())}, nil
 }
 
-func (c conn) Close() (err error) {
+func (c *conn) Close() (err error) {
 	err = c.my.Close()
 	c.my = nil
 	if err != nil {
@@ -188,6 +189,9 @@ func (t tx) Rollback() (err error) {
 }
 
 func (s *stmt) Close() (err error) {
+	if s.my == nil {
+		panic("godrv: stmt closed twice")
+	}
 	err = s.my.Delete()
 	s.my = nil
 	if err != nil {
